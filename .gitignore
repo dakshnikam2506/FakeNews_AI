@@ -1,0 +1,97 @@
+# ============================================================
+# FakeNews_AI - Git Ignore
+# ============================================================
+
+# -------------------------
+# Python
+# -------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# -------------------------
+# Virtual environments
+# -------------------------
+.venv/
+venv/
+env/
+ENV/
+
+# -------------------------
+# Environment / secrets
+# -------------------------
+.env
+.env.*
+!.env.example
+
+# -------------------------
+# Jupyter
+# -------------------------
+.ipynb_checkpoints/
+
+# -------------------------
+# IDE / Editor
+# -------------------------
+.vscode/
+.idea/
+
+# -------------------------
+# OS generated files
+# -------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# -------------------------
+# Logs / temporary files
+# -------------------------
+*.log
+*.tmp
+*.temp
+
+# -------------------------
+# Python tooling
+# -------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# -------------------------
+# Build / distribution
+# -------------------------
+build/
+dist/
+*.egg-info/
+
+# -------------------------
+# Local test / debug output
+# -------------------------
+test_output/
+debug_output/
+*.bak
+
+# -------------------------
+# Secrets / credentials
+# -------------------------
+*.key
+*.pem
+credentials.json
+secrets.json
+
+# -------------------------
+# Local databases
+# -------------------------
+*.db
+*.sqlite
+*.sqlite3
+# Large datasets
+data/raw/*.csv
+data/processed/fakenewsnet_cleaned.csv
+
+# Training artifacts
+data/processed/X_train_tfidf.pkl
+data/processed/X_test_tfidf.pkl
+data/processed/y_train.pkl
+data/processed/y_test.pkl
