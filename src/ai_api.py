@@ -1,22 +1,14 @@
+```python
 """
 FakeNews_AI - FastAPI AI Service
 
-Purpose:
-    Exposes the AI Gateway through a REST API.
+This file handles API requests and sends news claims
+to the AI Gateway for prediction.
 
-Architecture:
-
-    Frontend / Backend
-            ↓
-        POST /predict
-            ↓
-        AI API
-            ↓
-        AI Gateway
-            ↓
-    Hybrid Decision Engine
-            ↓
-    ML + Evidence + NLI + XAI
+Available endpoints:
+    /       - Check if the API is running
+    /health - Check service status
+    /predict - Analyze a news claim
 """
 
 from fastapi import FastAPI, HTTPException
@@ -25,21 +17,14 @@ from pydantic import BaseModel, Field
 from .ai_gateway import predict_claim
 
 
-# ============================================================
-# FASTAPI APPLICATION
-# ============================================================
-
 app = FastAPI(
     title="FakeNews_AI",
-    description="Hybrid Real-Time Fake News Detection AI API",
+    description="Hybrid Real-Time Fake News Detection API",
     version="1.0.0"
 )
 
 
-# ============================================================
-# REQUEST SCHEMA
-# ============================================================
-
+# Request format for news prediction
 class PredictionRequest(BaseModel):
     claim: str = Field(
         ...,
@@ -47,10 +32,6 @@ class PredictionRequest(BaseModel):
         description="News claim to analyze"
     )
 
-
-# ============================================================
-# HEALTH CHECK
-# ============================================================
 
 @app.get("/")
 def root():
@@ -69,13 +50,9 @@ def health():
     }
 
 
-# ============================================================
-# PREDICTION ENDPOINT
-# ============================================================
-
 @app.post("/predict")
 def predict(request: PredictionRequest):
-
+    # Get the claim and remove extra spaces.
     claim = request.claim.strip()
 
     if not claim:
@@ -84,17 +61,13 @@ def predict(request: PredictionRequest):
             detail="Claim cannot be empty."
         )
 
+    # Get the result from the AI Gateway.
     result = predict_claim(claim)
 
     return result
 
 
-# ============================================================
-# LOCAL SERVER ENTRY
-# ============================================================
-
 if __name__ == "__main__":
-
     import uvicorn
 
     uvicorn.run(
@@ -103,3 +76,4 @@ if __name__ == "__main__":
         port=8000,
         reload=False
     )
+```
