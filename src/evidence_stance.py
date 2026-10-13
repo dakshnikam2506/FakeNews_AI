@@ -1,41 +1,17 @@
-"""
-Evidence Stance Classification
-==============================
+"""Classify retrieved articles by how their content relates to a claim.
 
-Classifies retrieved evidence relative to a claim as:
+The module combines semantic similarity, keyword overlap, simple
+contradiction cues, and DeBERTa NLI. It describes the relationship
+between a claim and its evidence; it does not decide whether a claim
+is true.
 
-    SUPPORTING
-    CONTRADICTING
-    RELATED
-    INSUFFICIENT
-
-The classifier uses:
-
-    1. Semantic similarity
-    2. Keyword overlap
-    3. Contradiction heuristics
-    4. NLI using DeBERTa
-
-Important:
-    This module is an evidence stance classifier.
-    It is NOT a truth detector.
-
-NLI determines the textual relationship between
-the evidence and the claim.
-
-NLI input order:
-
-    Evidence = premise
-    Claim    = hypothesis
+For NLI, the evidence is the premise and the claim is the hypothesis.
 """
 
 import re
 from typing import Dict, List
 
 
-# ============================================================
-# NLI IMPORT
-# ============================================================
 
 try:
     from .nli_stance import load_nli_model, predict_stance
@@ -52,9 +28,6 @@ except ImportError:
         predict_stance = None
 
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
 
 MIN_SIMILARITY = 0.30
 STRONG_SIMILARITY = 0.70
@@ -62,16 +35,12 @@ STRONG_SIMILARITY = 0.70
 MIN_KEYWORD_OVERLAP = 0.20
 STRONG_KEYWORD_OVERLAP = 0.50
 
-# NLI is only trusted when the evidence is
-# sufficiently relevant to the claim.
+# Only use NLI when the evidence is relevant enough.
 NLI_MIN_SIMILARITY = 0.40
 NLI_MIN_KEYWORD_OVERLAP = 0.20
 NLI_MIN_CONFIDENCE = 0.70
 
 
-# ============================================================
-# GLOBAL NLI MODEL
-# ============================================================
 
 _nli_model = None
 
@@ -94,9 +63,6 @@ def get_nli_model():
     return _nli_model
 
 
-# ============================================================
-# NEGATION / CONTRADICTION WORDS
-# ============================================================
 
 NEGATION_WORDS = {
     "not",
@@ -129,9 +95,6 @@ NEGATION_WORDS = {
 }
 
 
-# ============================================================
-# TEXT PROCESSING
-# ============================================================
 
 def clean_text(text: str) -> str:
     """
@@ -182,9 +145,6 @@ def tokenize(text: str) -> List[str]:
     return clean_text(text).split()
 
 
-# ============================================================
-# STOPWORDS
-# ============================================================
 
 STOPWORDS = {
     "the",
@@ -227,9 +187,6 @@ STOPWORDS = {
 }
 
 
-# ============================================================
-# KEYWORD EXTRACTION
-# ============================================================
 
 def extract_keywords(text: str) -> set:
     """
@@ -273,9 +230,6 @@ def keyword_overlap(
     return len(overlap) / len(claim_keywords)
 
 
-# ============================================================
-# CONTRADICTION HEURISTIC
-# ============================================================
 
 def contains_negation(text: str) -> bool:
     """
@@ -322,9 +276,6 @@ def contradiction_signal(
     )
 
 
-# ============================================================
-# NLI
-# ============================================================
 
 def run_nli(
     claim: str,
@@ -452,9 +403,6 @@ def run_nli(
         }
 
 
-# ============================================================
-# STANCE CLASSIFICATION
-# ============================================================
 
 def classify_stance(
     claim: str,
@@ -485,9 +433,7 @@ def classify_stance(
     This function does NOT determine factual truth.
     """
 
-    # --------------------------------------------------------
-    # EMPTY INPUT
-    # --------------------------------------------------------
+    # Nothing useful can be classified if either text is missing.
 
     if not claim or not evidence:
         return {
@@ -505,9 +451,7 @@ def classify_stance(
 
     similarity = float(similarity)
 
-    # --------------------------------------------------------
-    # HEURISTIC SIGNALS
-    # --------------------------------------------------------
+    # Check lexical overlap and explicit contradiction wording.
 
     overlap = keyword_overlap(
         claim,
@@ -519,9 +463,7 @@ def classify_stance(
         evidence,
     )
 
-    # --------------------------------------------------------
-    # BASIC RELEVANCE GATE
-    # --------------------------------------------------------
+    # Skip NLI when the evidence has too little in common with the claim.
 
     if (
         similarity < MIN_SIMILARITY
@@ -546,18 +488,14 @@ def classify_stance(
             ),
         }
 
-    # --------------------------------------------------------
-    # NLI RELEVANCE GATE
-    # --------------------------------------------------------
+    # NLI is used only when both relevance checks pass.
 
     sufficient_relevance = (
         similarity >= NLI_MIN_SIMILARITY
         and overlap >= NLI_MIN_KEYWORD_OVERLAP
     )
 
-    # --------------------------------------------------------
-    # RUN NLI
-    # --------------------------------------------------------
+    # Compare the evidence with the claim using NLI.
 
     nli_result = run_nli(
         claim,
@@ -601,12 +539,7 @@ def classify_stance(
         )
     )
 
-    # --------------------------------------------------------
-    # NLI CONTRADICTION
-    #
-    # IMPORTANT:
-    # This check comes before entailment and fallback logic.
-    # --------------------------------------------------------
+    # Check contradiction before support or fallback cases.
 
     if (
         sufficient_relevance
@@ -644,9 +577,7 @@ def classify_stance(
             ),
         }
 
-    # --------------------------------------------------------
-    # NLI ENTAILMENT
-    # --------------------------------------------------------
+    # A confident entailment result counts as supporting evidence.
 
     if (
         sufficient_relevance
@@ -684,9 +615,7 @@ def classify_stance(
             ),
         }
 
-    # --------------------------------------------------------
-    # NLI NEUTRAL
-    # --------------------------------------------------------
+    # Neutral means related, but not clear support or contradiction.
 
     if (
         sufficient_relevance
@@ -724,9 +653,7 @@ def classify_stance(
             ),
         }
 
-    # --------------------------------------------------------
-    # NLI ERROR / UNAVAILABLE
-    # --------------------------------------------------------
+    # If NLI fails, only use the conservative similarity fallback.
 
     if nli_stance in {
         "ERROR",
@@ -780,9 +707,7 @@ def classify_stance(
                 ),
             }
 
-    # --------------------------------------------------------
-    # RELATED
-    # --------------------------------------------------------
+    # The article is relevant, but the stance is still unclear.
 
     if (
         similarity >= MIN_SIMILARITY
@@ -826,9 +751,7 @@ def classify_stance(
             ),
         }
 
-    # --------------------------------------------------------
-    # FINAL FALLBACK
-    # --------------------------------------------------------
+    # Nothing above gave enough information for a stronger label.
 
     return {
         "stance": "INSUFFICIENT",
@@ -867,9 +790,6 @@ def classify_stance(
     }
 
 
-# ============================================================
-# MULTIPLE EVIDENCE ARTICLES
-# ============================================================
 
 def classify_evidence_articles(
     claim: str,
@@ -929,9 +849,6 @@ def classify_evidence_articles(
     return results
 
 
-# ============================================================
-# STANCE SUMMARY
-# ============================================================
 
 def summarize_stances(
     classified_articles: List[Dict],
@@ -986,9 +903,6 @@ def summarize_stances(
     }
 
 
-# ============================================================
-# BASIC TEST
-# ============================================================
 
 if __name__ == "__main__":
 
