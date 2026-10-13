@@ -1,22 +1,11 @@
-"""
-NLI-Based Evidence Stance Classification
+"""Classify how retrieved evidence relates to a claim using NLI.
 
-Day 22 — Final AI Build
+The model is loaded from ``models/nli-deberta-v3-small``. This module
+expects the model to be present locally and does not download it at runtime.
+NLI describes the relationship between two pieces of text; it does not
+establish whether a claim is true in the real world.
 
-Labels:
-0 -> contradiction
-1 -> entailment
-2 -> neutral
-
-NLI determines the textual relationship between evidence
-and claim. It does not determine factual truth by itself.
-
-The final project uses the locally stored NLI model:
-
-    models/nli-deberta-v3-small
-
-The loader intentionally does NOT silently download a model.
-This makes the final AI pipeline deterministic and deployment-safe.
+Model labels: 0 = contradiction, 1 = entailment, 2 = neutral.
 """
 
 from pathlib import Path
@@ -25,9 +14,7 @@ import numpy as np
 from sentence_transformers import CrossEncoder
 
 
-# ---------------------------------------------------------------------
-# PROJECT PATHS
-# ---------------------------------------------------------------------
+# Project Paths
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -42,21 +29,13 @@ NLI_MODEL_NAME = "cross-encoder/nli-deberta-v3-small"
 _nli_model = None
 
 
-# ---------------------------------------------------------------------
-# LOCAL MODEL VALIDATION
-# ---------------------------------------------------------------------
+# Local Model Validation
 
 def _validate_local_model_path():
-    """
-    Validate that the local NLI model directory exists
-    and contains the expected model configuration.
+    """Check that the local model directory contains its config file.
 
-    Returns:
-        Path: Valid local model directory.
-
-    Raises:
-        FileNotFoundError: If the model directory is missing.
-        RuntimeError: If the directory exists but appears incomplete.
+    Raises FileNotFoundError when the directory is missing and RuntimeError
+    when the path or model files are incomplete.
     """
 
     if not MODEL_PATH.exists():
@@ -95,19 +74,10 @@ def _validate_local_model_path():
     return MODEL_PATH
 
 
-# ---------------------------------------------------------------------
-# MODEL LOADING
-# ---------------------------------------------------------------------
+# Model Loading
 
 def load_nli_model():
-    """
-    Load the locally stored NLI model.
-
-    The model is loaded only once and then cached.
-
-    Returns:
-        CrossEncoder: Loaded NLI model.
-    """
+    """Load the local CrossEncoder once and reuse it on later calls."""
 
     global _nli_model
 
@@ -158,20 +128,10 @@ def load_nli_model():
     return _nli_model
 
 
-# ---------------------------------------------------------------------
-# LABEL NORMALIZATION
-# ---------------------------------------------------------------------
+# Label Normalization
 
 def normalize_label(label):
-    """
-    Normalize NLI labels.
-
-    Args:
-        label: Integer label or textual label.
-
-    Returns:
-        str: CONTRADICTION, ENTAILMENT, or NEUTRAL.
-    """
+    """Convert a model label to CONTRADICTION, ENTAILMENT, or NEUTRAL."""
 
     if isinstance(label, (int, np.integer)):
 
@@ -200,14 +160,10 @@ def normalize_label(label):
     return "NEUTRAL"
 
 
-# ---------------------------------------------------------------------
-# LABEL MAPPING
-# ---------------------------------------------------------------------
+# Label Mapping
 
 def get_label_mapping():
-    """
-    Return the NLI model label mapping.
-    """
+    """Return the label IDs used by this model."""
 
     return {
         0: "CONTRADICTION",
@@ -216,20 +172,13 @@ def get_label_mapping():
     }
 
 
-# ---------------------------------------------------------------------
-# TEXT PREPARATION
-# ---------------------------------------------------------------------
+# Text Preparation
 
 def prepare_evidence(
     evidence,
     max_chars=1200,
 ):
-    """
-    Clean and limit evidence length.
-
-    Limiting the evidence prevents extremely long article text
-    from unnecessarily increasing NLI computation.
-    """
+    """Trim evidence and cap its length before passing it to the model."""
 
     if not evidence:
         return ""
@@ -242,14 +191,10 @@ def prepare_evidence(
     return evidence
 
 
-# ---------------------------------------------------------------------
-# SOFTMAX
-# ---------------------------------------------------------------------
+# Softmax
 
 def _softmax(scores):
-    """
-    Convert model logits into probabilities.
-    """
+    """Convert the model's raw scores into probabilities."""
 
     scores = np.asarray(
         scores,
@@ -273,34 +218,18 @@ def _softmax(scores):
     return probabilities
 
 
-# ---------------------------------------------------------------------
-# SINGLE EVIDENCE STANCE
-# ---------------------------------------------------------------------
+# Single Evidence Stance
 
 def predict_stance(
     model,
     claim,
     evidence,
 ):
-    """
-    Predict the textual relationship between evidence and claim.
+    """Score the relationship between one evidence passage and a claim.
 
-    NLI formulation:
-
-        premise    = evidence
-        hypothesis = claim
-
-    Returns:
-        {
-            "stance": "CONTRADICTION" / "ENTAILMENT" / "NEUTRAL",
-            "contradiction": float,
-            "entailment": float,
-            "neutral": float,
-            "confidence": float
-        }
-
-    Important:
-        This does NOT determine whether the claim is factually true.
+    The evidence is the premise and the claim is the hypothesis. The returned
+    confidence is the model's score for its selected stance, not a probability
+    that the claim is factually true.
     """
 
     evidence = prepare_evidence(
@@ -385,32 +314,16 @@ def predict_stance(
     }
 
 
-# ---------------------------------------------------------------------
-# MULTI-ARTICLE EVIDENCE ANALYSIS
-# ---------------------------------------------------------------------
+# Multi-Article Evidence Analysis
 
 def analyze_evidence(
     model,
     claim,
     articles,
 ):
-    """
-    Analyze multiple evidence articles using NLI.
+    """Run NLI on each article and summarize the observed stances.
 
-    Returns:
-        {
-            "articles": [...],
-            "counts": {
-                "CONTRADICTION": int,
-                "ENTAILMENT": int,
-                "NEUTRAL": int
-            },
-            "aggregate_stance": str
-        }
-
-    Important:
-        Aggregate stance represents the observed NLI relationship
-        across retrieved evidence. It is NOT a factual truth label.
+    The aggregate describes the retrieved evidence, not a final truth label.
     """
 
     if not articles:
@@ -503,8 +416,8 @@ def analyze_evidence(
             enriched_article
         )
 
-    # Conservative aggregate:
-    # contradiction takes priority, followed by entailment.
+    # Prefer a contradiction if any article receives that label; otherwise
+    # use entailment when present, and neutral when neither appears.
     if counts["CONTRADICTION"] > 0:
 
         aggregate_stance = (
@@ -530,9 +443,7 @@ def analyze_evidence(
     }
 
 
-# ---------------------------------------------------------------------
-# STANDALONE VALIDATION
-# ---------------------------------------------------------------------
+# Standalone validation
 
 def run_validation():
 
@@ -671,9 +582,7 @@ def run_validation():
     return False
 
 
-# ---------------------------------------------------------------------
-# MAIN
-# ---------------------------------------------------------------------
+# Run validation when called directly
 
 if __name__ == "__main__":
 
