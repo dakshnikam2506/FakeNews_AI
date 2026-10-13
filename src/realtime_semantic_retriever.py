@@ -1,340 +1,182 @@
+```python
 import os
 import sys
+
 import numpy as np
+from sentence_transformers import SentenceTransformer
 
-# ------------------------------------------------------------
-# PATH SETUP
-# ------------------------------------------------------------
 
+# Make the project source directory importable.
 PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))
 )
-
 SRC_DIR = os.path.join(PROJECT_ROOT, "src")
 
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
+from realtime_evidence_retriever import retrieve_realtime_evidence
 
-# ------------------------------------------------------------
-# IMPORTS
-# ------------------------------------------------------------
-
-from sentence_transformers import SentenceTransformer
-
-from realtime_evidence_retriever import (
-    retrieve_realtime_evidence
-)
-
-
-# ------------------------------------------------------------
-# CONFIGURATION
-# ------------------------------------------------------------
 
 MODEL_PATH = os.path.join(
-    PROJECT_ROOT,
-    "models",
-    "all-MiniLM-L6-v2"
+    PROJECT_ROOT, "models", "all-MiniLM-L6-v2"
 )
 
 DEFAULT_TOP_K = 5
-
-# Minimum semantic similarity for an article to be considered
-# potentially relevant evidence.
 MIN_SIMILARITY = 0.30
 
 
-# ------------------------------------------------------------
-# LOAD EMBEDDING MODEL
-# ------------------------------------------------------------
+def load_embedding_model():
+    """Load the local sentence embedding model."""
+    if not os.path.isdir(MODEL_PATH):
+        raise FileNotFoundError(
+            f"Embedding model directory not found: {MODEL_PATH}"
+        )
 
-print(
-    "[INFO] Loading semantic embedding model..."
-)
+    print("Loading sentence embedding model...")
+    model = SentenceTransformer(MODEL_PATH)
+    print("Embedding model ready.")
 
-embedding_model = SentenceTransformer(
-    MODEL_PATH
-)
-
-print(
-    "[INFO] Embedding model loaded."
-)
+    return model
 
 
-# ------------------------------------------------------------
-# COSINE SIMILARITY
-# ------------------------------------------------------------
+embedding_model = load_embedding_model()
 
-def cosine_similarity(
-    vector_a,
-    vector_b
-):
-    """
-    Calculate cosine similarity between two vectors.
-    """
 
-    vector_a = np.asarray(
-        vector_a,
-        dtype=np.float32
-    )
+def cosine_similarity(vector_a, vector_b):
+    """Return cosine similarity between two vectors."""
+    vector_a = np.asarray(vector_a, dtype=np.float32)
+    vector_b = np.asarray(vector_b, dtype=np.float32)
 
-    vector_b = np.asarray(
-        vector_b,
-        dtype=np.float32
-    )
+    norm_a = np.linalg.norm(vector_a)
+    norm_b = np.linalg.norm(vector_b)
 
-    denominator = (
-        np.linalg.norm(vector_a)
-        * np.linalg.norm(vector_b)
-    )
+    denominator = norm_a * norm_b
 
     if denominator == 0:
         return 0.0
 
-    return float(
-        np.dot(vector_a, vector_b)
-        / denominator
-    )
+    return float(np.dot(vector_a, vector_b) / denominator)
 
 
-# ------------------------------------------------------------
-# SCORE REAL-TIME ARTICLES
-# ------------------------------------------------------------
-
-def score_articles(
-    claim,
-    articles
-):
-    """
-    Calculate semantic similarity between the claim and
-    each real-time article.
-    """
-
+def score_articles(claim, articles):
+    """Rank retrieved articles by semantic similarity to a claim."""
     if not articles:
         return []
 
-    # --------------------------------------------------------
-    # Claim embedding
-    # --------------------------------------------------------
-
-    claim_embedding = embedding_model.encode(
+    claim_vector = embedding_model.encode(
         claim,
         convert_to_numpy=True,
-        normalize_embeddings=True
+        normalize_embeddings=True,
     )
 
-    scored_articles = []
-
-    # --------------------------------------------------------
-    # Article embeddings
-    # --------------------------------------------------------
-
     article_texts = [
-        article.get("text", "")
+        article.get("text", "") or ""
         for article in articles
     ]
 
-    article_embeddings = embedding_model.encode(
+    article_vectors = embedding_model.encode(
         article_texts,
         convert_to_numpy=True,
-        normalize_embeddings=True
+        normalize_embeddings=True,
     )
 
-    # --------------------------------------------------------
-    # Calculate similarity
-    # --------------------------------------------------------
+    ranked_articles = []
 
-    for article, article_embedding in zip(
-        articles,
-        article_embeddings
+    for article, article_vector in zip(
+        articles, article_vectors
     ):
-
         similarity = cosine_similarity(
-            claim_embedding,
-            article_embedding
+            claim_vector, article_vector
         )
 
-        result = dict(article)
+        scored_article = {
+            **article,
+            "similarity": round(similarity, 4),
+            "retrieval_type": "REAL_TIME_SEMANTIC",
+        }
 
-        result["similarity"] = round(
-            similarity,
-            4
-        )
+        ranked_articles.append(scored_article)
 
-        result["retrieval_type"] = (
-            "REAL_TIME_SEMANTIC"
-        )
-
-        scored_articles.append(
-            result
-        )
-
-    # --------------------------------------------------------
-    # Sort highest similarity first
-    # --------------------------------------------------------
-
-    scored_articles.sort(
-        key=lambda x: x.get(
-            "similarity",
-            0.0
-        ),
-        reverse=True
+    ranked_articles.sort(
+        key=lambda article: article["similarity"],
+        reverse=True,
     )
 
-    return scored_articles
+    return ranked_articles
 
-
-# ------------------------------------------------------------
-# RETRIEVE SEMANTIC REAL-TIME EVIDENCE
-# ------------------------------------------------------------
 
 def retrieve_realtime_semantic_evidence(
     claim,
     top_k=DEFAULT_TOP_K,
-    min_similarity=MIN_SIMILARITY
+    min_similarity=MIN_SIMILARITY,
 ):
-    """
-    Retrieve current news articles and rank them using
-    semantic similarity.
-    """
+    """Fetch current evidence and return the strongest matches."""
+    if not isinstance(claim, str) or not claim.strip():
+        raise ValueError("Claim must be a non-empty string.")
+
+    if top_k < 1:
+        raise ValueError("top_k must be at least 1.")
+
+    if not 0.0 <= min_similarity <= 1.0:
+        raise ValueError("min_similarity must be between 0 and 1.")
 
     articles = retrieve_realtime_evidence(
         claim,
-        max_results=max(
-            top_k * 2,
-            10
-        )
+        max_results=max(top_k * 2, 10),
     )
 
     if not articles:
         return []
 
-    scored_articles = score_articles(
-        claim,
-        articles
-    )
+    ranked_articles = score_articles(claim, articles)
 
-    # --------------------------------------------------------
-    # Filter weak results
-    # --------------------------------------------------------
-
-    filtered = [
+    relevant_articles = [
         article
-        for article in scored_articles
-        if article.get(
-            "similarity",
-            0.0
-        ) >= min_similarity
+        for article in ranked_articles
+        if article["similarity"] >= min_similarity
     ]
 
-    # --------------------------------------------------------
-    # Return top K
-    # --------------------------------------------------------
-
-    return filtered[:top_k]
+    return relevant_articles[:top_k]
 
 
-# ------------------------------------------------------------
-# PRINT RESULTS
-# ------------------------------------------------------------
+def print_results(claim, results):
+    """Display retrieved evidence in a readable format."""
+    print("\n" + "=" * 65)
+    print("REAL-TIME EVIDENCE RETRIEVAL")
+    print("=" * 65)
 
-def print_results(
-    claim,
-    results
-):
-
-    print("\n")
-    print("=" * 75)
-    print("REAL-TIME SEMANTIC EVIDENCE TEST")
-    print("=" * 75)
-
-    print("\nCLAIM:")
-    print(claim)
-
-    print("\nRESULT COUNT:")
-    print(len(results))
-
-    print("\n" + "-" * 75)
+    print(f"\nClaim: {claim}")
+    print(f"Matching articles: {len(results)}")
 
     if not results:
-
-        print(
-            "No sufficiently relevant real-time evidence found."
-        )
-
-        print("\n" + "=" * 75)
-
+        print("\nNo articles met the similarity threshold.")
+        print("=" * 65)
         return
 
-    for index, result in enumerate(
-        results,
-        start=1
-    ):
+    for index, article in enumerate(results, start=1):
+        print(f"\n[{index}] {article.get('title', 'Untitled')}")
+        print(f"Source: {article.get('source', 'Unknown')}")
+        print(f"Published: {article.get('published', 'Unknown')}")
+        print(f"Similarity: {article['similarity']:.4f}")
+        print(f"URL: {article.get('url', 'Unavailable')}")
 
-        print(
-            f"\nRESULT {index}"
-        )
-
-        print(
-            f"Title: "
-            f"{result.get('title', '')}"
-        )
-
-        print(
-            f"Source: "
-            f"{result.get('source', '')}"
-        )
-
-        print(
-            f"Published: "
-            f"{result.get('published', '')}"
-        )
-
-        print(
-            f"Similarity: "
-            f"{result.get('similarity', 0.0):.4f}"
-        )
-
-        print(
-            f"URL: "
-            f"{result.get('url', '')}"
-        )
-
-        description = result.get(
-            "description",
-            ""
-        )
-
+        description = article.get("description", "")
         if description:
+            print(f"Description: {description[:300]}")
 
-            print(
-                f"Description: "
-                f"{description[:300]}"
-            )
+    print("\n" + "=" * 65)
 
-    print("\n" + "=" * 75)
-
-
-# ------------------------------------------------------------
-# TEST
-# ------------------------------------------------------------
 
 if __name__ == "__main__":
+    claim = "India government announces new economic policy"
 
-    test_claim = (
-        "India government announces new economic policy"
-    )
-
-    print(
-        "\nRunning FakeNews_AI semantic real-time retrieval..."
-    )
+    print("\nSearching for relevant real-time evidence...")
 
     results = retrieve_realtime_semantic_evidence(
-        test_claim,
-        top_k=5
+        claim,
+        top_k=5,
     )
 
-    print_results(
-        test_claim,
-        results
-    )
+    print_results(claim, results)
+```
