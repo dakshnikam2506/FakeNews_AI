@@ -1,16 +1,18 @@
+```python
 import os
 import sys
 import re
 import html
 import urllib.parse
 import xml.etree.ElementTree as ET
+
 from datetime import datetime, timezone
 
 import requests
 
 
 # ------------------------------------------------------------
-# PATH SETUP
+# PROJECT SETUP
 # ------------------------------------------------------------
 
 PROJECT_ROOT = os.path.dirname(
@@ -24,7 +26,7 @@ if SRC_DIR not in sys.path:
 
 
 # ------------------------------------------------------------
-# CONFIGURATION
+# SETTINGS
 # ------------------------------------------------------------
 
 GOOGLE_NEWS_RSS_URL = (
@@ -32,7 +34,6 @@ GOOGLE_NEWS_RSS_URL = (
 )
 
 DEFAULT_MAX_RESULTS = 10
-
 REQUEST_TIMEOUT = 15
 
 USER_AGENT = (
@@ -45,13 +46,11 @@ USER_AGENT = (
 
 
 # ------------------------------------------------------------
-# TEXT CLEANING
+# CLEAN ARTICLE TEXT
 # ------------------------------------------------------------
 
 def clean_text(text):
-    """
-    Clean HTML entities and unnecessary whitespace.
-    """
+    """Remove HTML tags, decode entities and trim whitespace."""
 
     if text is None:
         return ""
@@ -74,13 +73,11 @@ def clean_text(text):
 
 
 # ------------------------------------------------------------
-# GOOGLE NEWS RSS URL
+# PREPARE THE SEARCH URL
 # ------------------------------------------------------------
 
 def build_search_url(query):
-    """
-    Build a Google News RSS search URL.
-    """
+    """Create the Google News RSS URL for a search query."""
 
     encoded_query = urllib.parse.quote_plus(
         query
@@ -96,13 +93,11 @@ def build_search_url(query):
 
 
 # ------------------------------------------------------------
-# FETCH RSS
+# GET THE RSS RESPONSE
 # ------------------------------------------------------------
 
 def fetch_rss(query):
-    """
-    Fetch Google News RSS results for a query.
-    """
+    """Request news results and return the RSS response."""
 
     url = build_search_url(query)
 
@@ -122,13 +117,11 @@ def fetch_rss(query):
 
 
 # ------------------------------------------------------------
-# PARSE RSS
+# EXTRACT ARTICLES FROM RSS
 # ------------------------------------------------------------
 
 def parse_rss(xml_text, max_results=DEFAULT_MAX_RESULTS):
-    """
-    Parse RSS XML and extract news articles.
-    """
+    """Read the RSS feed and collect the available article details."""
 
     root = ET.fromstring(
         xml_text
@@ -186,14 +179,8 @@ def parse_rss(xml_text, max_results=DEFAULT_MAX_RESULTS):
         source = clean_text(source)
         link = link.strip() if link else ""
 
-        # ----------------------------------------------------
-        # Google News titles often look like:
-        #
-        # "Headline - BBC"
-        #
-        # Keep the complete title because it can contain
-        # useful source information.
-        # ----------------------------------------------------
+        # Keep the full headline. Google News may include
+        # the publisher's name as part of the title.
 
         results.append({
             "title": title,
@@ -207,7 +194,7 @@ def parse_rss(xml_text, max_results=DEFAULT_MAX_RESULTS):
 
 
 # ------------------------------------------------------------
-# REAL-TIME NEWS SEARCH
+# SEARCH FOR RECENT NEWS
 # ------------------------------------------------------------
 
 def search_realtime_news(
@@ -215,19 +202,12 @@ def search_realtime_news(
     max_results=DEFAULT_MAX_RESULTS
 ):
     """
-    Search current news using Google News RSS.
+    Search Google News for articles related to the query.
 
-    Returns a list of dictionaries containing:
-
-        title
-        description
-        source
-        published
-        url
+    Returns article details in a consistent dictionary format.
     """
 
     if not query or not query.strip():
-
         return []
 
     try:
@@ -272,13 +252,15 @@ def search_realtime_news(
 
 
 # ------------------------------------------------------------
-# NORMALIZE ARTICLE
+# STANDARDIZE ARTICLE DATA
 # ------------------------------------------------------------
 
 def normalize_article(article):
     """
-    Create a normalized representation that can later be
-    passed into the semantic retrieval / decision pipeline.
+    Prepare an article for use by the retrieval pipeline.
+
+    The combined text field is used later when comparing
+    the article with the claim being checked.
     """
 
     title = article.get(
@@ -306,7 +288,6 @@ def normalize_article(article):
         ""
     )
 
-    # Combine title and description for semantic comparison.
     combined_text = (
         f"{title}. {description}"
     ).strip()
@@ -323,7 +304,7 @@ def normalize_article(article):
 
 
 # ------------------------------------------------------------
-# REAL-TIME EVIDENCE RETRIEVAL
+# RETRIEVE EVIDENCE FOR A CLAIM
 # ------------------------------------------------------------
 
 def retrieve_realtime_evidence(
@@ -331,12 +312,8 @@ def retrieve_realtime_evidence(
     max_results=DEFAULT_MAX_RESULTS
 ):
     """
-    Retrieve fresh news articles relevant to a claim.
-
-    This function currently performs retrieval only.
-
-    Semantic similarity scoring and factual verification
-    will be added in later Day 12 steps.
+    Find news articles related to a claim and standardize
+    their fields before passing them to later pipeline stages.
     """
 
     articles = search_realtime_news(
@@ -360,13 +337,10 @@ def retrieve_realtime_evidence(
 
 
 # ------------------------------------------------------------
-# PRINT RESULTS
+# DISPLAY SEARCH RESULTS
 # ------------------------------------------------------------
 
-def print_results(
-    claim,
-    results
-):
+def print_results(claim, results):
 
     print("\n")
     print("=" * 75)
@@ -434,7 +408,7 @@ def print_results(
 
 
 # ------------------------------------------------------------
-# TEST
+# RUN A QUICK RETRIEVAL TEST
 # ------------------------------------------------------------
 
 if __name__ == "__main__":
@@ -456,3 +430,4 @@ if __name__ == "__main__":
         test_claim,
         results
     )
+```
