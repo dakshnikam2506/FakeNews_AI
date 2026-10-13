@@ -1,69 +1,27 @@
-"""
-Hybrid Real-Time Fake News Decision Engine
-
-Pipeline:
-
-    Claim
-      ↓
-    ML Prediction
-      ↓
-    Real-Time Evidence Retrieval
-      ↓
-    Semantic Retrieval
-      ↓
-    Evidence Verification
-      ↓
-    Evidence Stance / NLI
-      ↓
-    Hybrid Decision
-      ↓
-    LIME + SHAP Explanation
-
-Important:
-- Evidence strength is NOT truth probability.
-- NLI stance represents the relationship between evidence and claim.
-- CONTRADICTING evidence can support a FAKE decision only when
-  the evidence is sufficiently relevant and strong.
-- Conflicting or insufficient evidence produces UNCERTAIN.
-- XAI availability is explicitly represented.
-"""
-
 from typing import Any, Dict, List
 
 
-# ======================================================================
-# CONFIGURATION
-# ======================================================================
-
+# Pipeline settings
 TOP_K = 5
-
 MIN_EVIDENCE_STRENGTH = 0.55
 MIN_CONTRADICTION_STRENGTH = 0.50
-
 XAI_FEATURES = 10
 
 
-# ======================================================================
-# SAFE HELPERS
-# ======================================================================
-
 def _safe_float(value: Any, default: float = 0.0) -> float:
-    """Safely convert a value to float."""
+    """Convert a value to float, using a default if conversion fails."""
 
     try:
         result = float(value)
-
-        if result != result:
+        if result != result:  # NaN
             return default
-
         return result
-
     except (TypeError, ValueError):
         return default
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
-    """Safely convert a value to int."""
+    """Convert a value to int without raising conversion errors."""
 
     try:
         return int(float(value))
@@ -72,16 +30,14 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 
 def _get_domain(url: str) -> str:
-    """Extract a simple domain from a URL."""
+    """Extract the domain name from an article URL."""
 
     if not url:
         return ""
 
     try:
         url = str(url).strip()
-
-        url = url.replace("https://", "")
-        url = url.replace("http://", "")
+        url = url.replace("https://", "").replace("http://", "")
 
         domain = url.split("/")[0]
 
@@ -89,13 +45,12 @@ def _get_domain(url: str) -> str:
             domain = domain[4:]
 
         return domain.lower()
-
     except Exception:
         return ""
 
 
 def _empty_stance_summary() -> Dict[str, Any]:
-    """Return a stable empty stance summary."""
+    """Return the standard stance structure when no results are available."""
 
     return {
         "overall_stance": "INSUFFICIENT",
@@ -115,7 +70,7 @@ def _empty_stance_summary() -> Dict[str, Any]:
 
 
 def _empty_nli_summary() -> Dict[str, Any]:
-    """Return a stable empty NLI summary."""
+    """Return an empty NLI summary with the expected fields."""
 
     return {
         "overall_stance": "INSUFFICIENT",
@@ -137,16 +92,7 @@ def _empty_nli_summary() -> Dict[str, Any]:
 def _normalize_xai_result(
     xai_result: Any,
 ) -> Dict[str, Any]:
-    """
-    Normalize XAI output into an explicit, API-safe structure.
-
-    Successful XAI:
-        available = True
-
-    Failed XAI:
-        available = False
-        error = structured object
-    """
+    """Standardize XAI output so the API receives a predictable structure."""
 
     if not isinstance(xai_result, dict):
         return {
@@ -164,14 +110,10 @@ def _normalize_xai_result(
 
     available = xai_result.get("available")
 
-    # If the XAI module already explicitly reports availability,
-    # preserve it.
     if isinstance(available, bool):
         normalized_available = available
     else:
-        # Existing successful xai.py implementations may not include
-        # "available". Infer success from the presence of usable XAI
-        # output rather than returning UNKNOWN.
+        # Older XAI implementations may not return an availability flag.
         normalized_available = bool(
             xai_result.get("lime")
             or xai_result.get("shap")
@@ -184,27 +126,14 @@ def _normalize_xai_result(
             "model",
             "logistic_regression",
         ),
-        "prediction": xai_result.get(
-            "prediction"
-        ),
+        "prediction": xai_result.get("prediction"),
         "confidence": (
-            round(
-                _safe_float(
-                    xai_result.get("confidence")
-                ),
-                4,
-            )
+            round(_safe_float(xai_result.get("confidence")), 4)
             if xai_result.get("confidence") is not None
             else None
         ),
-        "lime": xai_result.get(
-            "lime",
-            [],
-        ),
-        "shap": xai_result.get(
-            "shap",
-            [],
-        ),
+        "lime": xai_result.get("lime", []),
+        "shap": xai_result.get("shap", []),
         "error": None,
     }
 
@@ -213,13 +142,11 @@ def _normalize_xai_result(
 
         if isinstance(error_value, dict):
             normalized["error"] = error_value
-
         elif error_value:
             normalized["error"] = {
                 "code": "XAI_ERROR",
                 "message": str(error_value),
             }
-
         else:
             normalized["error"] = {
                 "code": "XAI_UNAVAILABLE",
@@ -229,18 +156,14 @@ def _normalize_xai_result(
     return normalized
 
 
-# ======================================================================
-# EVIDENCE METRICS
-# ======================================================================
-
 def _calculate_evidence_metrics(
-    articles: List[Dict[str, Any]]
+    articles: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     """
-    Calculate evidence metrics from verified articles.
+    Summarize the relevance and coverage of retrieved evidence.
 
-    These metrics describe evidence quality/relevance.
-    They are NOT probabilities that the claim is true.
+    Evidence strength describes the available evidence. It is not
+    the probability that a claim is true.
     """
 
     if not articles:
@@ -259,49 +182,26 @@ def _calculate_evidence_metrics(
     domains = set()
 
     for article in articles:
-
         if not isinstance(article, dict):
             continue
 
-        similarity = _safe_float(
-            article.get(
-                "similarity",
-                0.0,
-            )
-        )
-
+        similarity = _safe_float(article.get("similarity", 0.0))
         keyword_overlap = _safe_float(
-            article.get(
-                "keyword_overlap",
-                0.0,
-            )
+            article.get("keyword_overlap", 0.0)
         )
-
         evidence_score = _safe_float(
             article.get(
                 "evidence_score",
-                article.get(
-                    "score",
-                    0.0,
-                ),
+                article.get("score", 0.0),
             )
         )
 
         scores.append(evidence_score)
 
-        if (
-            similarity >= 0.30
-            or keyword_overlap >= 0.20
-        ):
+        if similarity >= 0.30 or keyword_overlap >= 0.20:
             covered_articles += 1
 
-        domain = _get_domain(
-            article.get(
-                "url",
-                "",
-            )
-        )
-
+        domain = _get_domain(article.get("url", ""))
         if domain:
             domains.add(domain)
 
@@ -318,17 +218,8 @@ def _calculate_evidence_metrics(
 
     strongest = max(scores)
     average = sum(scores) / len(scores)
-
-    coverage = (
-        covered_articles / len(scores)
-        if scores
-        else 0.0
-    )
-
-    source_diversity = min(
-        len(domains) / 5.0,
-        1.0,
-    )
+    coverage = covered_articles / len(scores)
+    source_diversity = min(len(domains) / 5.0, 1.0)
 
     evidence_strength = (
         0.45 * strongest
@@ -348,38 +239,19 @@ def _calculate_evidence_metrics(
 
     return {
         "articles_evaluated": len(scores),
-        "evidence_strength": round(
-            evidence_strength,
-            4,
-        ),
+        "evidence_strength": round(evidence_strength, 4),
         "evidence_signal": signal,
-        "source_diversity": round(
-            source_diversity,
-            4,
-        ),
-        "evidence_coverage": round(
-            coverage,
-            4,
-        ),
-        "average_evidence_score": round(
-            average,
-            4,
-        ),
-        "strongest_evidence_score": round(
-            strongest,
-            4,
-        ),
+        "source_diversity": round(source_diversity, 4),
+        "evidence_coverage": round(coverage, 4),
+        "average_evidence_score": round(average, 4),
+        "strongest_evidence_score": round(strongest, 4),
     }
 
 
-# ======================================================================
-# NLI SUMMARY
-# ======================================================================
-
 def _build_nli_summary(
-    classified_articles: List[Dict[str, Any]]
+    classified_articles: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Build a compact NLI summary."""
+    """Count the evidence stances and calculate average NLI confidence."""
 
     counts = {
         "SUPPORTING": 0,
@@ -397,38 +269,26 @@ def _build_nli_summary(
     confidences = []
 
     for article in classified_articles:
-
         if not isinstance(article, dict):
             continue
 
         stance = str(
-            article.get(
-                "stance",
-                "INSUFFICIENT",
-            )
+            article.get("stance", "INSUFFICIENT")
         ).upper()
 
         if stance in counts:
             counts[stance] += 1
 
         nli_stance = str(
-            article.get(
-                "nli_stance",
-                "",
-            )
+            article.get("nli_stance", "")
         ).upper()
 
         if nli_stance in nli_counts:
             nli_counts[nli_stance] += 1
 
-        confidence = article.get(
-            "nli_confidence"
-        )
-
+        confidence = article.get("nli_confidence")
         if confidence is not None:
-            confidences.append(
-                _safe_float(confidence)
-            )
+            confidences.append(_safe_float(confidence))
 
     average_confidence = (
         sum(confidences) / len(confidences)
@@ -441,16 +301,12 @@ def _build_nli_summary(
         and counts["CONTRADICTING"] > 0
     ):
         overall_stance = "CONFLICTING"
-
     elif counts["SUPPORTING"] > 0:
         overall_stance = "SUPPORTING"
-
     elif counts["CONTRADICTING"] > 0:
         overall_stance = "CONTRADICTING"
-
     elif counts["RELATED"] > 0:
         overall_stance = "RELATED"
-
     else:
         overall_stance = "INSUFFICIENT"
 
@@ -458,25 +314,16 @@ def _build_nli_summary(
         "overall_stance": overall_stance,
         "counts": counts,
         "nli_counts": nli_counts,
-        "average_nli_confidence": round(
-            average_confidence,
-            4,
-        ),
+        "average_nli_confidence": round(average_confidence, 4),
     }
 
-
-# ======================================================================
-# HYBRID DECISION
-# ======================================================================
 
 def make_realtime_decision(
     ml_result: Dict[str, Any],
     evidence_result: Dict[str, Any],
     evidence_analysis: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """
-    Combine ML prediction, evidence quality and evidence stance.
-    """
+    """Combine the ML prediction with the retrieved evidence and its stance."""
 
     if not isinstance(ml_result, dict):
         ml_result = {}
@@ -488,18 +335,10 @@ def make_realtime_decision(
         evidence_analysis = {}
 
     ml_prediction = str(
-        ml_result.get(
-            "prediction",
-            "",
-        )
+        ml_result.get("prediction", "")
     ).upper().strip()
 
-    valid_ml_predictions = {
-        "REAL",
-        "FAKE",
-    }
-
-    if ml_prediction not in valid_ml_predictions:
+    if ml_prediction not in {"REAL", "FAKE"}:
         return {
             "decision": "UNCERTAIN",
             "reason": "Invalid or unavailable ML prediction.",
@@ -517,10 +356,7 @@ def make_realtime_decision(
     evidence_strength = _safe_float(
         evidence_result.get(
             "evidence_strength",
-            evidence_analysis.get(
-                "evidence_strength",
-                0.0,
-            ),
+            evidence_analysis.get("evidence_strength", 0.0),
         )
     )
 
@@ -537,18 +373,11 @@ def make_realtime_decision(
     articles_evaluated = _safe_int(
         evidence_result.get(
             "articles_evaluated",
-            evidence_analysis.get(
-                "articles_evaluated",
-                0,
-            ),
+            evidence_analysis.get("articles_evaluated", 0),
         )
     )
 
-    stance_summary = evidence_analysis.get(
-        "stance_summary",
-        {},
-    )
-
+    stance_summary = evidence_analysis.get("stance_summary", {})
     if not isinstance(stance_summary, dict):
         stance_summary = {}
 
@@ -562,48 +391,18 @@ def make_realtime_decision(
         )
     ).upper()
 
-    counts = stance_summary.get(
-        "counts",
-        {},
-    )
-
+    counts = stance_summary.get("counts", {})
     if not isinstance(counts, dict):
         counts = {}
 
-    supporting_count = _safe_int(
-        counts.get(
-            "SUPPORTING",
-            0,
-        )
-    )
-
-    contradicting_count = _safe_int(
-        counts.get(
-            "CONTRADICTING",
-            0,
-        )
-    )
-
-    related_count = _safe_int(
-        counts.get(
-            "RELATED",
-            0,
-        )
-    )
-
-    insufficient_count = _safe_int(
-        counts.get(
-            "INSUFFICIENT",
-            0,
-        )
-    )
+    supporting_count = _safe_int(counts.get("SUPPORTING", 0))
+    contradicting_count = _safe_int(counts.get("CONTRADICTING", 0))
+    related_count = _safe_int(counts.get("RELATED", 0))
+    insufficient_count = _safe_int(counts.get("INSUFFICIENT", 0))
 
     base_result = {
         "ml_prediction": ml_prediction,
-        "evidence_strength": round(
-            evidence_strength,
-            4,
-        ),
+        "evidence_strength": round(evidence_strength, 4),
         "evidence_signal": evidence_signal,
         "evidence_stance": evidence_stance,
         "articles_evaluated": articles_evaluated,
@@ -613,27 +412,20 @@ def make_realtime_decision(
         "insufficient_count": insufficient_count,
     }
 
-    # --------------------------------------------------------------
-    # RULE 1 — VERY WEAK / INSUFFICIENT
-    # --------------------------------------------------------------
-
+    # Weak evidence should not normally produce a definitive result.
     if evidence_strength < MIN_EVIDENCE_STRENGTH:
-
         if (
             evidence_stance == "CONTRADICTING"
             and evidence_strength >= MIN_CONTRADICTION_STRENGTH
             and contradicting_count >= 1
         ):
             decision = "FAKE"
-
             reason = (
                 "The retrieved evidence contradicts the claim "
                 "with sufficient evidence strength."
             )
-
         else:
             decision = "UNCERTAIN"
-
             reason = (
                 "The available evidence is not strong enough "
                 "to make a reliable hybrid decision."
@@ -645,12 +437,8 @@ def make_realtime_decision(
             **base_result,
         }
 
-    # --------------------------------------------------------------
-    # RULE 2 — CONFLICTING
-    # --------------------------------------------------------------
-
+    # Mixed supporting and contradicting evidence needs further review.
     if evidence_stance == "CONFLICTING":
-
         return {
             "decision": "UNCERTAIN",
             "reason": (
@@ -660,15 +448,8 @@ def make_realtime_decision(
             **base_result,
         }
 
-    # --------------------------------------------------------------
-    # RULE 3 — RELATED / INSUFFICIENT
-    # --------------------------------------------------------------
-
-    if evidence_stance in {
-        "RELATED",
-        "INSUFFICIENT",
-    }:
-
+    # Related articles alone are not enough to verify the claim.
+    if evidence_stance in {"RELATED", "INSUFFICIENT"}:
         return {
             "decision": "UNCERTAIN",
             "reason": (
@@ -678,25 +459,16 @@ def make_realtime_decision(
             **base_result,
         }
 
-    # --------------------------------------------------------------
-    # RULE 4 — SUPPORTING
-    # --------------------------------------------------------------
-
+    # Supporting evidence must agree with the ML classification.
     if evidence_stance == "SUPPORTING":
-
         if ml_prediction == "REAL":
-
             decision = "REAL"
-
             reason = (
                 "The ML classifier predicts REAL and the "
                 "retrieved real-time evidence supports the claim."
             )
-
         else:
-
             decision = "UNCERTAIN"
-
             reason = (
                 "The retrieved evidence supports the claim, "
                 "but the ML classifier predicts FAKE."
@@ -708,28 +480,19 @@ def make_realtime_decision(
             **base_result,
         }
 
-    # --------------------------------------------------------------
-    # RULE 5 — CONTRADICTING
-    # --------------------------------------------------------------
-
+    # Contradicting evidence can support a FAKE result when strong enough.
     if evidence_stance == "CONTRADICTING":
-
         if (
             evidence_strength >= MIN_CONTRADICTION_STRENGTH
             and contradicting_count >= 1
         ):
-
             decision = "FAKE"
-
             reason = (
                 "The retrieved evidence contradicts the claim "
                 "with sufficient evidence strength."
             )
-
         else:
-
             decision = "UNCERTAIN"
-
             reason = (
                 "Contradicting evidence was detected, but its "
                 "strength is insufficient for a reliable FAKE decision."
@@ -741,10 +504,6 @@ def make_realtime_decision(
             **base_result,
         }
 
-    # --------------------------------------------------------------
-    # FALLBACK
-    # --------------------------------------------------------------
-
     return {
         "decision": "UNCERTAIN",
         "reason": (
@@ -755,22 +514,16 @@ def make_realtime_decision(
     }
 
 
-# ======================================================================
-# COMPLETE REAL-TIME PIPELINE
-# ======================================================================
-
 def run_realtime_pipeline(
     claim: str,
     top_k: int = TOP_K,
 ) -> Dict[str, Any]:
-    """
-    Execute the complete real-time fake-news pipeline.
-    """
+    """Run classification, evidence analysis, decision-making, and XAI."""
 
     from .predictor import predict_news
 
     from .realtime_semantic_retriever import (
-        retrieve_realtime_semantic_evidence
+        retrieve_realtime_semantic_evidence,
     )
 
     from .realtime_verifier import (
@@ -785,12 +538,8 @@ def run_realtime_pipeline(
 
     from .xai import explain_news
 
-    # ==================================================================
-    # EMPTY CLAIM
-    # ==================================================================
-
+    # Handle empty input before calling any models.
     if not claim or not str(claim).strip():
-
         empty_stance = _empty_stance_summary()
 
         return {
@@ -832,28 +581,20 @@ def run_realtime_pipeline(
     print("=" * 70)
     print("HYBRID REAL-TIME FAKE NEWS DETECTION")
     print("=" * 70)
-
-    print()
-    print("CLAIM:")
+    print("\nCLAIM:")
     print(claim)
 
-    # ==================================================================
-    # STEP 1 — ML
-    # ==================================================================
-
+    # Step 1: ML classification
     print()
     print("-" * 70)
-    print("STEP 1 — ML CLASSIFICATION")
+    print("STEP 1 - ML CLASSIFICATION")
     print("-" * 70)
 
     try:
         ml_result = predict_news(claim)
-
         if not isinstance(ml_result, dict):
             ml_result = {}
-
     except Exception as exc:
-
         ml_result = {
             "prediction": "UNKNOWN",
             "model_agreement": 0.0,
@@ -864,56 +605,35 @@ def run_realtime_pipeline(
         }
 
     ml_prediction = str(
-        ml_result.get(
-            "prediction",
-            "UNKNOWN",
-        )
+        ml_result.get("prediction", "UNKNOWN")
     ).upper()
 
     model_agreement = _safe_float(
-        ml_result.get(
-            "model_agreement",
-            0.0,
-        )
+        ml_result.get("model_agreement", 0.0)
     )
 
-    print(
-        f"ML Prediction: {ml_prediction}"
-    )
+    print(f"ML Prediction: {ml_prediction}")
+    print(f"Model Agreement: {model_agreement:.4f}")
 
-    print(
-        f"Model Agreement: {model_agreement:.4f}"
-    )
-
-    # ==================================================================
-    # STEP 2 — REAL-TIME RETRIEVAL
-    # ==================================================================
-
+    # Step 2: Retrieve relevant articles
     print()
     print("-" * 70)
-    print("STEP 2 — REAL-TIME EVIDENCE RETRIEVAL")
+    print("STEP 2 - REAL-TIME EVIDENCE RETRIEVAL")
     print("-" * 70)
 
     retrieval_error = None
 
     try:
-
         articles = retrieve_realtime_semantic_evidence(
             claim,
             top_k=top_k,
         )
-
     except Exception as exc:
-
         articles = []
-
         retrieval_error = {
             "code": "RETRIEVAL_ERROR",
             "message": str(exc),
         }
-
-    if articles is None:
-        articles = []
 
     if not isinstance(articles, list):
         articles = []
@@ -924,39 +644,24 @@ def run_realtime_pipeline(
         if isinstance(article, dict)
     ]
 
-    print(
-        f"Retrieved Articles: {len(articles)}"
-    )
+    print(f"Retrieved Articles: {len(articles)}")
 
-    # ==================================================================
-    # STEP 3 — VERIFICATION
-    # ==================================================================
-
+    # Step 3: Verify the retrieved articles
     print()
     print("-" * 70)
-    print("STEP 3 — EVIDENCE VERIFICATION")
+    print("STEP 3 - EVIDENCE VERIFICATION")
     print("-" * 70)
 
     verification_error = None
 
     try:
-
-        verified_articles = verify_articles(
-            claim,
-            articles,
-        )
-
+        verified_articles = verify_articles(claim, articles)
     except Exception as exc:
-
         verified_articles = []
-
         verification_error = {
             "code": "VERIFICATION_ERROR",
             "message": str(exc),
         }
-
-    if verified_articles is None:
-        verified_articles = []
 
     if not isinstance(verified_articles, list):
         verified_articles = []
@@ -968,53 +673,35 @@ def run_realtime_pipeline(
     ]
 
     try:
-
-        evidence_result = summarize_evidence(
-            claim,
-            articles,
-        )
-
+        evidence_result = summarize_evidence(claim, articles)
         if not isinstance(evidence_result, dict):
             evidence_result = {}
-
     except Exception as exc:
-
         evidence_result = {}
-
         verification_error = {
             "code": "EVIDENCE_SUMMARY_ERROR",
             "message": str(exc),
         }
 
-    # ==================================================================
-    # STEP 4 — STANCE / NLI
-    # ==================================================================
-
+    # Step 4: Classify the evidence stance
     print()
     print("-" * 70)
-    print("STEP 4 — EVIDENCE STANCE / NLI")
+    print("STEP 4 - EVIDENCE STANCE / NLI")
     print("-" * 70)
 
     stance_error = None
 
     try:
-
         classified_articles = classify_evidence_articles(
             claim,
             verified_articles,
         )
-
     except Exception as exc:
-
         classified_articles = []
-
         stance_error = {
             "code": "STANCE_ERROR",
             "message": str(exc),
         }
-
-    if classified_articles is None:
-        classified_articles = []
 
     if not isinstance(classified_articles, list):
         classified_articles = []
@@ -1026,33 +713,20 @@ def run_realtime_pipeline(
     ]
 
     try:
-
-        stance_summary = summarize_stances(
-            classified_articles
-        )
-
+        stance_summary = summarize_stances(classified_articles)
         if not isinstance(stance_summary, dict):
             stance_summary = _empty_stance_summary()
-
     except Exception as exc:
-
         stance_summary = _empty_stance_summary()
-
         stance_error = {
             "code": "STANCE_SUMMARY_ERROR",
             "message": str(exc),
         }
 
-    # ==================================================================
-    # STEP 5 — EVIDENCE METRICS
-    # ==================================================================
+    # Step 5: Calculate evidence metrics
+    metrics = _calculate_evidence_metrics(verified_articles)
 
-    metrics = _calculate_evidence_metrics(
-        verified_articles
-    )
-
-    # Prefer verifier aggregate metrics when available.
-
+    # Use the verifier's aggregate values when it provides them.
     for key in [
         "evidence_strength",
         "evidence_signal",
@@ -1062,66 +736,32 @@ def run_realtime_pipeline(
         "average_evidence_score",
         "strongest_evidence_score",
     ]:
-
         if key not in evidence_result:
             continue
 
         value = evidence_result[key]
 
         if key == "evidence_signal":
-
             metrics[key] = str(value).upper()
-
         elif key == "articles_evaluated":
-
             metrics[key] = _safe_int(value)
-
         else:
+            metrics[key] = round(_safe_float(value), 4)
 
-            metrics[key] = round(
-                _safe_float(value),
-                4,
-            )
-
-    print()
-    print("Evidence Signal:")
-    print(
-        metrics["evidence_signal"]
-    )
-
+    print("\nEvidence Signal:")
+    print(metrics["evidence_signal"])
     print("Evidence Strength:")
-    print(
-        f"{metrics['evidence_strength']:.4f}"
-    )
-
+    print(f"{metrics['evidence_strength']:.4f}")
     print("Articles Evaluated:")
-    print(
-        metrics["articles_evaluated"]
-    )
+    print(metrics["articles_evaluated"])
+    print("\nEvidence Stance:")
+    print(stance_summary)
 
-    print()
-    print("Evidence Stance:")
-    print(
-        stance_summary
-    )
-
-    # ==================================================================
-    # STEP 6 — HYBRID DECISION
-    # ==================================================================
-
+    # Step 6: Combine the ML and evidence results
     evidence_analysis = {
-        "evidence_strength": metrics[
-            "evidence_strength"
-        ],
-
-        "evidence_signal": metrics[
-            "evidence_signal"
-        ],
-
-        "articles_evaluated": metrics[
-            "articles_evaluated"
-        ],
-
+        "evidence_strength": metrics["evidence_strength"],
+        "evidence_signal": metrics["evidence_signal"],
+        "articles_evaluated": metrics["articles_evaluated"],
         "stance_summary": stance_summary,
     }
 
@@ -1132,41 +772,23 @@ def run_realtime_pipeline(
     )
 
     final_decision = str(
-        decision_result.get(
-            "decision",
-            "UNCERTAIN",
-        )
+        decision_result.get("decision", "UNCERTAIN")
     ).upper()
 
-    # ==================================================================
-    # STEP 7 — XAI
-    # ==================================================================
-
+    # Step 7: Generate LIME and SHAP explanations
     print()
     print("-" * 70)
-    print("STEP 7 — EXPLAINABLE AI")
+    print("STEP 7 - EXPLAINABLE AI")
     print("-" * 70)
 
     try:
-
-        # IMPORTANT:
-        # xai.py uses:
-        #
-        #     explain_news(text, num_features=10)
-        #
-        # NOT max_features.
-
+        # explain_news expects num_features, not max_features.
         xai_result = explain_news(
             claim,
             num_features=XAI_FEATURES,
         )
-
-        xai_result = _normalize_xai_result(
-            xai_result
-        )
-
+        xai_result = _normalize_xai_result(xai_result)
     except Exception as exc:
-
         xai_result = {
             "available": False,
             "model": "logistic_regression",
@@ -1180,60 +802,25 @@ def run_realtime_pipeline(
             },
         }
 
-    print(
-        f"XAI available: {xai_result['available']}"
-    )
+    print(f"XAI available: {xai_result['available']}")
 
-    # ==================================================================
-    # FINAL OUTPUT
-    # ==================================================================
-
+    # Print the final result
     print()
     print("=" * 70)
     print("FINAL HYBRID DECISION")
     print("=" * 70)
-
-    print()
+    print(f"\nML Prediction: {ml_prediction}")
+    print(f"Evidence Signal: {metrics['evidence_signal']}")
+    print(f"Evidence Strength: {metrics['evidence_strength']:.4f}")
     print(
-        f"ML Prediction: {ml_prediction}"
+        "Evidence Stance: "
+        f"{stance_summary.get('overall_stance', 'INSUFFICIENT')}"
     )
-
-    print(
-        f"Evidence Signal: "
-        f"{metrics['evidence_signal']}"
-    )
-
-    print(
-        f"Evidence Strength: "
-        f"{metrics['evidence_strength']:.4f}"
-    )
-
-    print(
-        f"Evidence Stance: "
-        f"{stance_summary.get(
-            'overall_stance',
-            'INSUFFICIENT'
-        )}"
-    )
-
-    print()
-    print(
-        f"FINAL DECISION: {final_decision}"
-    )
-
-    print()
-    print(
-        f"REASON: "
-        f"{decision_result.get('reason', '')}"
-    )
-
-    print()
+    print(f"\nFINAL DECISION: {final_decision}")
+    print(f"\nREASON: {decision_result.get('reason', '')}")
     print("=" * 70)
 
-    # ==================================================================
-    # ERROR INFORMATION
-    # ==================================================================
-
+    # Collect any errors encountered during the pipeline.
     errors = []
 
     if retrieval_error:
@@ -1246,156 +833,53 @@ def run_realtime_pipeline(
         errors.append(stance_error)
 
     if isinstance(ml_result.get("error"), dict):
-        errors.append(
-            ml_result["error"]
-        )
+        errors.append(ml_result["error"])
 
     if not xai_result.get("available", False):
         xai_error = xai_result.get("error")
-
         if isinstance(xai_error, dict):
             errors.append(xai_error)
 
-    error_output = (
-        errors
-        if errors
-        else None
-    )
+    error_output = errors if errors else None
 
-    # ==================================================================
-    # STRUCTURED RESULT
-    # ==================================================================
-
+    # Keep the result structure stable for the API.
     return {
         "claim": claim,
-
-        # --------------------------------------------------------------
-        # ML
-        # --------------------------------------------------------------
-
         "ml_prediction": ml_prediction,
-
-        "model_agreement": round(
-            model_agreement,
-            4,
-        ),
-
+        "model_agreement": round(model_agreement, 4),
         "ml_result": ml_result,
-
-        # --------------------------------------------------------------
-        # EVIDENCE
-        # --------------------------------------------------------------
-
-        "evidence_strength": metrics[
-            "evidence_strength"
-        ],
-
-        "evidence_signal": metrics[
-            "evidence_signal"
-        ],
-
-        "articles_evaluated": metrics[
-            "articles_evaluated"
-        ],
-
-        "source_diversity": metrics[
-            "source_diversity"
-        ],
-
-        "evidence_coverage": metrics[
-            "evidence_coverage"
-        ],
-
-        "average_evidence_score": metrics[
-            "average_evidence_score"
-        ],
-
-        "strongest_evidence_score": metrics[
-            "strongest_evidence_score"
-        ],
-
-        # --------------------------------------------------------------
-        # STANCE / NLI
-        # --------------------------------------------------------------
-
+        "evidence_strength": metrics["evidence_strength"],
+        "evidence_signal": metrics["evidence_signal"],
+        "articles_evaluated": metrics["articles_evaluated"],
+        "source_diversity": metrics["source_diversity"],
+        "evidence_coverage": metrics["evidence_coverage"],
+        "average_evidence_score": metrics["average_evidence_score"],
+        "strongest_evidence_score": metrics["strongest_evidence_score"],
         "evidence_stance": stance_summary.get(
             "overall_stance",
             "INSUFFICIENT",
         ),
-
         "stance_summary": stance_summary,
-
-        # --------------------------------------------------------------
-        # ARTICLES
-        # --------------------------------------------------------------
-
         "articles": classified_articles,
-
-        # --------------------------------------------------------------
-        # NLI
-        # --------------------------------------------------------------
-
-        "nli_summary": _build_nli_summary(
-            classified_articles
-        ),
-
-        # --------------------------------------------------------------
-        # DECISION
-        # --------------------------------------------------------------
-
+        "nli_summary": _build_nli_summary(classified_articles),
         "decision": final_decision,
-
-        "reason": decision_result.get(
-            "reason",
-            "",
-        ),
-
-        # --------------------------------------------------------------
-        # XAI
-        # --------------------------------------------------------------
-
+        "reason": decision_result.get("reason", ""),
         "xai": xai_result,
-
-        # --------------------------------------------------------------
-        # ERRORS
-        # --------------------------------------------------------------
-
         "errors": error_output,
     }
 
 
-# ======================================================================
-# COMMAND-LINE TEST
-# ======================================================================
-
 if __name__ == "__main__":
+    test_claim = "The government announced a new industrial policy."
 
-    test_claim = (
-        "The government announced a new industrial policy."
-    )
+    result = run_realtime_pipeline(test_claim)
 
-    result = run_realtime_pipeline(
-        test_claim
-    )
-
-    print()
-    print("Pipeline completed.")
-
+    print("\nPipeline completed.")
     print(
         "Final decision:",
-        result.get(
-            "decision",
-            "UNCERTAIN",
-        )
+        result.get("decision", "UNCERTAIN"),
     )
-
     print(
         "XAI available:",
-        result.get(
-            "xai",
-            {}
-        ).get(
-            "available",
-            False,
-        )
+        result.get("xai", {}).get("available", False),
     )
